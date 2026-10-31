@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>badminton for noobs Score Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<style>
+:root{--bg:#0b2a24;--p1:#0f6b57;--p2:#2a4fa8;--amber:#f5b82e;--chalk:#f4f6f1;color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body,#root{height:100%;margin:0}
+body{background:var(--bg);color:var(--chalk);font-family:Barlow,system-ui,sans-serif}
+.num{font-family:'Barlow Condensed',Impact,sans-serif;font-weight:800;line-height:.85}
+.big{font-size:min(50vw,27vh)}
+@media (orientation:landscape){.big{font-size:min(24vw,56vh)}}
+button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+@keyframes fall{from{transform:translateY(-10vh) rotate(0)}to{transform:translateY(110vh) rotate(540deg)}}
+@media (prefers-reduced-motion:reduce){.conf{display:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {useState,useEffect,useMemo,useRef}=React;
+const html=htm.bind(React.createElement);
+const WIN=10,CAP=15;
+const winner=(a,b)=>a>=CAP?0:b>=CAP?1:(Math.max(a,b)>=WIN&&Math.abs(a-b)>=2)?(a>b?0:1):-1;
+const fmt=s=>Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+const init=f=>({score:[0,0],server:f,wins:[0,0],results:[],game:1,pending:-1});
+const COL=['var(--p1)','var(--p2)'];
+const S=(()=>{try{return JSON.parse(localStorage.getItem('bst-save'))||{}}catch(e){return {}}})();
+
+function Seg({opts,val,on}){
+  return html`<div className="grid grid-cols-2 gap-2">${opts.map(([v,l])=>html`
+    <button key=${v} onClick=${()=>on(v)} className=${'min-h-[52px] rounded-xl font-semibold text-lg border-2 '+(val===v?'bg-[var(--amber)] text-black border-[var(--amber)]':'border-white/25')}>${l}</button>`)}</div>`;
+}
+
+function App(){
+  const [screen,setScreen]=useState(S.screen||'setup');
+  const [names,setNames]=useState(S.names||['','']);
+  const [best,setBest]=useState(S.best||1);
+  const [first,setFirst]=useState(S.first||0);
+  const [m,setM]=useState(S.m||init(0));
+  const [hist,setHist]=useState(S.hist||[]);
+  const [t0,setT0]=useState(S.t0||0);
+  const [now,setNow]=useState(0);
+  const [endAt,setEndAt]=useState(S.endAt||0);
+  const [pausedMs,setPausedMs]=useState(S.pausedMs||0);
+  const [pausedAt,setPausedAt]=useState(S.pausedAt||(S.screen==='play'?S.ts:0)||0);
+  const nm=i=>names[i].trim()||'Player '+(i+1);
+  const need=best===3?2:1;
+
+  useEffect(()=>{
+    if(screen!=='play')return;
+    const id=setInterval(()=>setNow(Date.now()),500);
+    return()=>clearInterval(id);
+  },[screen]);
+  const elapsed=Math.max(0,Math.floor(((screen==='done'?endAt:(pausedAt||now||Date.now()))-t0-pausedMs)/1000));
+
+  const start=()=>{
+    try{localStorage.setItem('bst-names',JSON.stringify(names))}catch(e){}
+    setM(init(first));setHist([]);setT0(Date.now());setNow(Date.now());setPausedMs(0);setPausedAt(0);setScreen('play');
+  };
+  const point=i=>{
+    if(m.pending>=0||pausedAt)return;
+    const score=[...m.score];score[i]++;
+    const n={...m,score,server:i};
+    const w=winner(score[0],score[1]);
+    if(w>=0){n.wins=[...m.wins];n.wins[w]++;n.results=[...m.results,score];n.pending=w;}
+    setHist([...hist,m]);setM(n);
+    if(w>=0&&n.wins[w]>=need){setEndAt(Date.now());setScreen('done');}
+  };
+  const undo=()=>{
+    if(!hist.length)return;
+    setM(hist[hist.length-1]);setHist(hist.slice(0,-1));setScreen('play');
+  };
+  const nextGame=()=>{
+    setHist([...hist,m]);
+    setM({...m,score:[0,0],server:m.pending,game:m.game+1,pending:-1});
+  };
+  const togglePause=()=>{if(pausedAt){setPausedMs(pausedMs+Date.now()-pausedAt);setPausedAt(0);}else setPausedAt(Date.now());};
+  const actRef=useRef();
+  actRef.current={point,undo,togglePause,nm};
+  const [confirmEnd,setConfirmEnd]=useState(false);
+  const endMatch=()=>{setConfirmEnd(false);setHist([]);setM(init(first));setPausedAt(0);setPausedMs(0);setScreen('setup');};
+  const [voice,setVoice]=useState(false);
+  const [heard,setHeard]=useState('');
+  const [voiceErr,setVoiceErr]=useState('');
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  useEffect(()=>{
+    try{localStorage.setItem('bst-save',JSON.stringify({screen,names,best,first,m,hist,t0,pausedMs,pausedAt,endAt,ts:Date.now()}))}catch(e){}
+  },[screen,names,best,first,m,hist,t0,pausedMs,pausedAt,endAt]);
+  useEffect(()=>{
+    if(screen!=='play')return;
+    let l;const g=async()=>{try{l=await navigator.wakeLock.request('screen')}catch(e){}};g();
+    const v=()=>{if(document.visibilityState==='visible')g()};
+    document.addEventListener('visibilitychange',v);
+    return()=>{document.removeEventListener('visibilitychange',v);try{l&&l.release()}catch(e){}};
+  },[screen]);
+  useEffect(()=>{
+    if(!voice||!SR)return;
+    let stop=false;
+    const r=new SR();r.continuous=true;r.interimResults=false;r.lang='en-IN';
+    r.onresult=e=>{
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        if(!e.results[i].isFinal)continue;
+        const t=e.results[i][0].transcript.toLowerCase().trim();
+        setHeard(t);
+        const a=actRef.current;
+        if(/\bundo\b/.test(t))a.undo();
+        else if(/\b(pause|resume)\b/.test(t))a.togglePause();
+        else if(t.includes('point')){
+          const seg=t.split('point')[1]||'';
+          const n0=a.nm(0).toLowerCase(),n1=a.nm(1).toLowerCase();
+          if(seg.includes(n0)||/\b(me|my|i|one|1)\b/.test(seg))a.point(0);
+          else if(seg.includes(n1)||/\b(her|him|them|two|to|too|2)\b/.test(seg))a.point(1);
+        }
+      }
+    };
+    r.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){stop=true;setVoice(false);setVoiceErr('Mic is blocked. Allow microphone access and try again.');}};
+    r.onend=()=>{if(!stop){try{r.start()}catch(x){}}};
+    try{r.start()}catch(x){}
+    return()=>{stop=true;r.onend=null;try{r.stop()}catch(x){}};
+  },[voice]);
+  const conf=useMemo(()=>Array.from({length:28},(_,i)=>({l:Math.random()*100,d:Math.random()*2,s:2.5+Math.random()*2,c:['#f5b82e','#f4f6f1','#3fbf9b','#6d8cff'][i%4]})),[]);
+
+  if(screen==='setup'){
+    return html`<main className="h-full overflow-y-auto"><div className="max-w-md mx-auto p-5 flex flex-col gap-6">
+      <h1 className="num text-6xl pt-4">Courtside</h1>
+      <p className="text-white/70 -mt-3">Score tracker for first to 10, win by 2, capped at 15.</p>
+      ${[0,1].map(i=>html`<label key=${i} className="flex flex-col gap-2 font-semibold">Player ${i+1}
+        <input value=${names[i]} placeholder=${'Player '+(i+1)} onInput=${e=>{const x=[...names];x[i]=e.target.value;setNames(x)}}
+          className="min-h-[56px] rounded-xl px-4 text-xl text-black font-normal" style=${{background:'var(--chalk)'}} maxLength="20"/></label>`)}
+      <div className="flex flex-col gap-2"><span className="font-semibold">Match format</span>
+        <${Seg} opts=${[[1,'Single game'],[3,'Best of 3']]} val=${best} on=${setBest}/></div>
+      <div className="flex flex-col gap-2"><span className="font-semibold">Serves first</span>
+        <${Seg} opts=${[[0,nm(0)],[1,nm(1)]]} val=${first} on=${setFirst}/></div>
+      <button onClick=${start} className="min-h-[64px] rounded-2xl text-2xl font-bold text-black" style=${{background:'var(--amber)'}}>Start match</button>
+    </div></main>`;
+  }
+
+  if(screen==='done'){
+    const w=m.wins[0]>=need?0:1;
+    return html`<main className="h-full overflow-y-auto relative">
+      ${conf.map((c,i)=>html`<span key=${i} className="conf fixed top-0 w-2 h-3 rounded-sm pointer-events-none" style=${{left:c.l+'%',background:c.c,animation:'fall '+c.s+'s linear '+c.d+'s 2 both'}}></span>`)}
+      <div className="max-w-md mx-auto p-5 flex flex-col gap-5 min-h-full justify-center">
+        <div className="rounded-3xl p-8 text-center" style=${{background:COL[w]}}>
+          <div className="text-6xl">🏆</div>
+          <div className="num text-6xl mt-3 break-words">${nm(w)}</div>
+          <div className="text-xl mt-2 text-white/85">wins the match</div>
+          ${best===3&&html`<div className="num text-7xl mt-5">${m.wins[0]} : ${m.wins[1]}</div>`}
+          <div className="mt-5 flex flex-col gap-1">${m.results.map((r,i)=>html`<div key=${i} className="text-lg"><span className="text-white/70">Game ${i+1}</span> ${' '} <b>${nm(0)} ${r[0]}, ${nm(1)} ${r[1]}</b></div>`)}</div>
+          <div className="mt-4 text-white/75">Match time ${fmt(elapsed)}</div>
+        </div>
+        <button onClick=${start} className="min-h-[60px] rounded-2xl text-xl font-bold text-black" style=${{background:'var(--amber)'}}>Rematch</button>
+        <button onClick=${()=>setScreen('setup')} className="min-h-[56px] rounded-2xl text-lg font-semibold border-2 border-white/30">New players</button>
+        <button onClick=${undo} className="min-h-[48px] text-white/70 underline">Undo final point</button>
+      </div></main>`;
+  }
+
+  const sv=m.server,court=m.score[sv]%2===0?'Right':'Left';
+  return html`<main className="h-full flex flex-col select-none">
+    <header className="flex items-center justify-between px-4 py-3 gap-3">
+      <div className="num text-3xl tabular-nums w-16">${fmt(elapsed)}</div>
+      <div className="text-center leading-tight">
+        <div className="font-semibold">${best===3?'Game '+m.game+' of 3':'Single game'}</div>
+        ${best===3&&html`<div className="text-white/70 text-sm">Games ${m.wins[0]} to ${m.wins[1]}</div>`}
+      </div>
+      <div className="flex gap-2">
+        <button onClick=${togglePause} className="min-h-[52px] px-3 rounded-xl font-semibold border-2 border-white/40">${pausedAt?'Resume':'Pause'}</button>
+        <button onClick=${undo} disabled=${!hist.length} className="min-h-[52px] px-3 rounded-xl font-semibold border-2 border-white/40 disabled:opacity-30">Undo</button>
+      </div>
+    </header>
+    <div className="px-4 pb-1 flex items-center gap-3 text-sm">
+      <button onClick=${()=>{setVoiceErr('');if(SR)setVoice(!voice);else setVoiceErr('This browser has no speech support. Try Safari or Chrome.')}} className=${'min-h-[44px] px-4 rounded-full font-semibold border-2 shrink-0 '+(voice?'bg-[var(--amber)] text-black border-[var(--amber)]':'border-white/40')}>${voice?'🎤 Listening':'🎤 Voice off'}</button>
+      <span className="text-white/70 truncate">${voiceErr||(voice?(heard?'Heard: '+heard:'Say "point me" or "point her"'):'')}</span>
+      <button onClick=${()=>setConfirmEnd(true)} className="ml-auto min-h-[44px] px-4 rounded-full font-semibold border-2 border-white/40 shrink-0">End match</button>
+    </div>
+    <div className="flex-1 flex flex-col landscape:flex-row gap-2 p-2 min-h-0">
+      ${[0,1].map(i=>html`<button key=${i} onClick=${()=>point(i)} aria-label=${'Point for '+nm(i)}
+        className="flex-1 min-h-0 rounded-3xl flex flex-col items-center justify-center gap-3 active:brightness-125 transition"
+        style=${{background:COL[i],boxShadow:sv===i?'inset 0 0 0 6px var(--amber)':'none'}}>
+        <span className="text-2xl font-semibold max-w-full truncate px-4">${nm(i)}</span>
+        <span className="num big tabular-nums">${m.score[i]}</span>
+        <span className=${'flex items-center gap-2 rounded-full px-4 py-2 font-semibold text-black '+(sv===i?'':'invisible')} style=${{background:'var(--amber)'}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style=${{transform:'rotate('+(i===0?'0':'180')+'deg)'}} className="landscape:hidden"><path d="M12 3l9 14H3z"/></svg>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style=${{transform:'rotate('+(i===0?'-90':'90')+'deg)'}} className="hidden landscape:block"><path d="M12 3l9 14H3z"/></svg>
+          Serving from ${court} court</span>
+      </button>`)}
+    </div>
+    ${confirmEnd&&html`<div className="fixed inset-0 bg-black/80 flex items-center justify-center p-5 z-20">
+      <div className="w-full max-w-sm rounded-3xl p-6 text-center flex flex-col gap-4" style=${{background:'var(--bg)',border:'2px solid var(--amber)'}}>
+        <div className="num text-5xl">End this match?</div>
+        <div className="text-white/70">The current score will be lost and you will go back to the player names screen.</div>
+        <button onClick=${endMatch} className="min-h-[60px] rounded-2xl text-xl font-bold text-black" style=${{background:'var(--amber)'}}>Yes, end match</button>
+        <button onClick=${()=>setConfirmEnd(false)} className="min-h-[52px] rounded-2xl font-semibold border-2 border-white/50">Keep playing</button>
+      </div></div>`}
+    ${pausedAt>0&&m.pending<0&&html`<div className="fixed inset-0 bg-black/75 flex items-center justify-center p-5 z-10">
+      <div className="w-full max-w-sm rounded-3xl p-6 text-center flex flex-col gap-4" style=${{background:'var(--bg)',border:'2px solid var(--amber)'}}>
+        <div className="num text-5xl">Paused</div>
+        <div className="num text-6xl tabular-nums">${m.score[0]} : ${m.score[1]}</div>
+        <div className="text-white/70">Timer stopped. Scoring is locked.</div>
+        <button onClick=${togglePause} className="min-h-[60px] rounded-2xl text-xl font-bold text-black" style=${{background:'var(--amber)'}}>Resume</button>
+      </div></div>`}
+    ${m.pending>=0&&html`<div className="fixed inset-0 bg-black/75 flex items-center justify-center p-5 z-10">
+      <div className="w-full max-w-sm rounded-3xl p-6 text-center flex flex-col gap-4" style=${{background:COL[m.pending]}}>
+        <div className="num text-5xl break-words">${nm(m.pending)} takes game ${m.game}</div>
+        <div className="num text-6xl">${m.score[0]} : ${m.score[1]}</div>
+        <button onClick=${nextGame} className="min-h-[60px] rounded-2xl text-xl font-bold text-black" style=${{background:'var(--amber)'}}>Start game ${m.game+1}</button>
+        <button onClick=${undo} className="min-h-[52px] rounded-2xl font-semibold border-2 border-white/50">Undo last point</button>
+      </div></div>`}
+  </main>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
